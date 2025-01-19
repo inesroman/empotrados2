@@ -1,4 +1,4 @@
-/******************************************************************************/
+//******************************************************************************/
 /*                                                                            */
 /* project  : PRACTICAS SE-II UNIZAR                                          */
 /* filename : comun.c                                                         */
@@ -42,18 +42,18 @@
 #include "inc/hw_gpio.h"
 #include "inc/hw_uart.h"
 #include "inc/hw_sysctl.h"
-#include "inc/hw_nvic.h"
 #include "driverlib/gpio.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/rom.h"
 #include "driverlib/uart.h"
 #include "driverlib/pin_map.h"
-#include "driverlib/interrupt.h"
+
 
 /******************************************************************************/
 /*                        Global variables                                    */
 /******************************************************************************/
 Task_Handle periodicTask;
+Task_Handle messageTask;  // Nueva tarea
 
 Semaphore_Handle periodicSem;
 
@@ -69,6 +69,7 @@ volatile int gpsBufferIndex = 0;
 /*                        Function Prototypes                                 */
 /******************************************************************************/
 Void periodicTaskFunc(UArg arg0, UArg arg1);
+Void messageTaskFunc(UArg arg0, UArg arg1);
 Void InitUart(void);
 Void periodic_release(void);
 Void sendGpsCommand(const char *command);
@@ -79,15 +80,20 @@ Void sendGpsCommand(const char *command);
 /******************************************************************************/
 Void main()
 {
-    // Inicializaci贸n de UART y GPIO
+    // Inicializaci髇 de UART y GPIO
     InitUart();
 
-    // Task de tarea peri贸dica
+    // Task de tarea peri骴ica
     Task_Params_init(&taskParams);
     taskParams.priority = 1;
     periodicTask = Task_create(periodicTaskFunc, &taskParams, NULL);
 
-    // Clock para tarea peri贸dica
+    // Task de nueva tarea que imprime mensaje
+    Task_Params_init(&taskParams);
+    taskParams.priority = 1;
+    messageTask = Task_create(messageTaskFunc, &taskParams, NULL);
+
+    // Clock para tarea peri骴ica
     Clock_Params_init(&clockParams);
     clockParams.period = 200;
     clockParams.startFlag = TRUE;
@@ -111,22 +117,15 @@ Void InitUart(void) {
     GPIOPinConfigure(GPIO_PB1_U1TX);   // Configurar PB1 como TX
     GPIOPinTypeUART(GPIO_PORTB_BASE, GPIO_PIN_0 | GPIO_PIN_1); // Establecer pines como UART
 
-
-    // Configuraci贸n de UART (9600 baudios, 8N1)
+    // Configuraci髇 de UART (9600 baudios, 8N1)
     UARTConfigSetExpClk(UART1_BASE, SysCtlClockGet(), 9600, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
 
     // Limpiar las interrupciones de UART1
     UARTIntClear(UART1_BASE, UART_INT_RX);
 
-    // Activar las interrupciones de UART1 (habilitar interrupci贸n de recepci贸n)
-    UARTIntEnable(UART1_BASE, UART_INT_RX);
-
-    // Habilitar la interrupci贸n de UART1 en el NVIC (Interrupt vector number 22)
-    IntEnable(22);
-    IntMasterEnable();
-
-    // Enviar comando de configuraci贸n al GPS
+    // Enviar el comando al GPS para configurar su salida
     sendGpsCommand("$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28\r\n");
+
 }
 
 /******************************************************************************/
@@ -135,12 +134,34 @@ Void InitUart(void) {
 Void periodic_release(void) {
     Semaphore_post(periodicSem);
 }
+
 Void periodicTaskFunc(UArg arg0, UArg arg1) {
     for (;;) {
         Semaphore_pend(periodicSem, BIOS_WAIT_FOREVER);
-        CS(20);
-        System_printf("Periodic Task Executed!\n");
+
+        while (UARTCharsAvail(UART1_BASE)) {
+            char c = UARTCharGet(UART1_BASE);
+            if (c == '\n' || gpsBufferIndex >= (GPS_BUFFER_SIZE - 1)) {
+                gpsBuffer[gpsBufferIndex] = '\0';
+                gpsBufferIndex = 0;
+                // Mostrar el mensaje recibido
+                System_printf("GPS Data: %s\n", gpsBuffer);
+                System_flush();
+            } else {
+                gpsBuffer[gpsBufferIndex++] = c;
+            }
+        }
+    }
+}
+
+/******************************************************************************/
+/*                        Message Task                                        */
+/******************************************************************************/
+Void messageTaskFunc(UArg arg0, UArg arg1) {
+    for (;;) {
+        System_printf("Message Task Executed!\n");
         System_flush();
+        Task_sleep(1000);
     }
 }
 
@@ -153,10 +174,4 @@ void sendGpsCommand(const char *command) {
     }
 }
 
-/******************************************************************************/
-/*                         Interruption handler                               */
-/******************************************************************************/
-void UART1IntHandler(void) {
-    uint32_t status = UARTIntStatus(UART1_BASE, true);
-    UARTIntClear(UART1_BASE, status);
-}
+
