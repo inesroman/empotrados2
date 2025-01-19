@@ -9,17 +9,17 @@
 /*                                                                            */
 /******************************************************************************/
 
+
 /******************************************************************************/
 /*                        Defines                                             */
 /******************************************************************************/
-
 #define TARGET_IS_TM4C123_RB1
 #define GPS_BUFFER_SIZE 128
+
 
 /******************************************************************************/
 /*                        Used modules                                        */
 /******************************************************************************/
-
 #include <xdc/std.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,7 +43,6 @@
 #include "inc/hw_uart.h"
 #include "inc/hw_sysctl.h"
 #include "inc/hw_nvic.h"
-
 #include "driverlib/gpio.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/rom.h"
@@ -51,70 +50,50 @@
 #include "driverlib/pin_map.h"
 #include "driverlib/interrupt.h"
 
-
 /******************************************************************************/
 /*                        Global variables                                    */
 /******************************************************************************/
+Task_Handle periodicTask;
 
-Task_Handle uartReadTask;
-Task_Handle uartWriteTask;
+Semaphore_Handle periodicSem;
 
-Semaphore_Handle uartReadSem;
-Semaphore_Handle uartWriteSem;
-
-Clock_Handle uartClockRead;
-Clock_Handle uartClockWrite;
-
+Clock_Handle periodicClock;
 Clock_Params clockParams;
 Task_Params taskParams;
 
 char gpsBuffer[GPS_BUFFER_SIZE];
 volatile int gpsBufferIndex = 0;
 
+
 /******************************************************************************/
 /*                        Function Prototypes                                 */
 /******************************************************************************/
-
-Void uartReadTaskFunc(UArg arg0, UArg arg1);
-Void uartWriteTaskFunc(UArg arg0, UArg arg1);
+Void periodicTaskFunc(UArg arg0, UArg arg1);
 Void InitUart(void);
-Void uartReadRelease(void);
-Void uartWriteRelease(void);
+Void periodic_release(void);
+Void sendGpsCommand(const char *command);
+
 
 /******************************************************************************/
 /*                        Main                                                */
 /******************************************************************************/
-
 Void main()
 {
-    // Inicializaci髇 de UART y GPIO
+    // Inicializaci贸n de UART y GPIO
     InitUart();
 
-    // Task de lectura de UART
+    // Task de tarea peri贸dica
     Task_Params_init(&taskParams);
     taskParams.priority = 1;
-    uartReadTask = Task_create(uartReadTaskFunc, &taskParams, NULL);
+    periodicTask = Task_create(periodicTaskFunc, &taskParams, NULL);
 
-    // Clock para leer de UART
-    Clock_Params_init(&clockParams);
-    clockParams.period = 100;
-    clockParams.startFlag = TRUE;
-    uartClockRead = Clock_create((Clock_FuncPtr)uartReadRelease, 10, &clockParams, NULL);
-
-    uartReadSem = Semaphore_create(0, NULL, NULL);
-
-    // Task de escritura de UART
-    Task_Params_init(&taskParams);
-    taskParams.priority = 1;
-    uartWriteTask = Task_create(uartWriteTaskFunc, &taskParams, NULL);
-
-    // Clock para escribir a UART
+    // Clock para tarea peri贸dica
     Clock_Params_init(&clockParams);
     clockParams.period = 200;
     clockParams.startFlag = TRUE;
-    uartClockWrite = Clock_create((Clock_FuncPtr)uartWriteRelease, 10, &clockParams, NULL);
+    periodicClock = Clock_create((Clock_FuncPtr)periodic_release, 10, &clockParams, NULL);
 
-    uartWriteSem = Semaphore_create(0, NULL, NULL);
+    periodicSem = Semaphore_create(0, NULL, NULL);
 
     BIOS_start();
 }
@@ -122,84 +101,57 @@ Void main()
 /******************************************************************************/
 /*                        UART Initialization                                */
 /******************************************************************************/
-
 Void InitUart(void) {
     // Habilitar el reloj de UART1 y GPIOB
-        SysCtlPeripheralEnable(SYSCTL_PERIPH_UART1);  // Habilitar UART1
-        SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);  // Habilitar GPIOB
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_UART1);  // Habilitar UART1
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);  // Habilitar GPIOB
 
-        // Configurar PB0 y PB1 como UART
-        GPIOPinConfigure(GPIO_PB0_U1RX);   // Configurar PB0 como RX
-        GPIOPinConfigure(GPIO_PB1_U1TX);   // Configurar PB1 como TX
-        GPIOPinTypeUART(GPIO_PORTB_BASE, GPIO_PIN_0 | GPIO_PIN_1); // Establecer pines como UART
+    // Configurar PB0 y PB1 como UART
+    GPIOPinConfigure(GPIO_PB0_U1RX);   // Configurar PB0 como RX
+    GPIOPinConfigure(GPIO_PB1_U1TX);   // Configurar PB1 como TX
+    GPIOPinTypeUART(GPIO_PORTB_BASE, GPIO_PIN_0 | GPIO_PIN_1); // Establecer pines como UART
 
-        // Configuraci髇 de UART (9600 baudios, 8N1)
-        UARTConfigSetExpClk(UART1_BASE, SysCtlClockGet(), 9600, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
 
-        // Limpiar las interrupciones de UART1
-        UARTIntClear(UART1_BASE, UART_INT_RX);
+    // Configuraci贸n de UART (9600 baudios, 8N1)
+    UARTConfigSetExpClk(UART1_BASE, SysCtlClockGet(), 9600, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
 
-        // Activar las interrupciones de UART1 (habilitar interrupci髇 de recepci髇)
-        UARTIntEnable(UART1_BASE, UART_INT_RX);
+    // Limpiar las interrupciones de UART1
+    UARTIntClear(UART1_BASE, UART_INT_RX);
 
-        // Habilitar la interrupci髇 de UART1 en el NVIC (Interrupt vector number 22)
-        IntEnable(22);
+    // Activar las interrupciones de UART1 (habilitar interrupci贸n de recepci贸n)
+    UARTIntEnable(UART1_BASE, UART_INT_RX);
 
-        IntMasterEnable();
+    // Habilitar la interrupci贸n de UART1 en el NVIC (Interrupt vector number 22)
+    IntEnable(22);
+    IntMasterEnable();
 
-        // Enviar comando de configuraci髇 al GPS
-        sendGpsCommand("$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28\r\n");
+    // Enviar comando de configuraci贸n al GPS
+    sendGpsCommand("$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28\r\n");
 }
 
 /******************************************************************************/
-/*                        Tasks                                               */
+/*                        Periodic Task                                       */
 /******************************************************************************/
-
-Void uartReadRelease(void) {
-    Semaphore_post(uartReadSem);
+Void periodic_release(void) {
+    Semaphore_post(periodicSem);
 }
-
-Void uartReadTaskFunc(UArg arg0, UArg arg1) {
+Void periodicTaskFunc(UArg arg0, UArg arg1) {
     for (;;) {
-        Semaphore_pend(uartReadSem, BIOS_WAIT_FOREVER);
-
-        while (UARTCharsAvail(UART1_BASE)) {
-            char c = UARTCharGet(UART1_BASE);  // Leer un car醕ter desde UART
-            if (c == '\n' || gpsBufferIndex >= (GPS_BUFFER_SIZE - 1)) {
-                gpsBuffer[gpsBufferIndex] = '\0';  // Terminar la cadena
-                gpsBufferIndex = 0;
-
-                // Mostrar el mensaje recibido
-                System_printf("GPS Data: %s\n", gpsBuffer);
-                System_flush();  // Asegurarse de que se imprima en la consola
-            } else {
-                gpsBuffer[gpsBufferIndex++] = c;
-            }
-        }
-    }
-}
-
-Void uartWriteRelease(void) {
-    Semaphore_post(uartWriteSem);
-}
-
-Void uartWriteTaskFunc(UArg arg0, UArg arg1)
-{
-    for (;;) {
-        Semaphore_pend(uartWriteSem, BIOS_WAIT_FOREVER);
-        CS (40) ;
+        Semaphore_pend(periodicSem, BIOS_WAIT_FOREVER);
+        CS(20);
+        System_printf("Periodic Task Executed!\n");
+        System_flush();
     }
 }
 
 /******************************************************************************/
-/*                     Tarea para enviar comandos al GPS                      */
+/*                     Method to send commans to GPS module                   */
 /******************************************************************************/
 void sendGpsCommand(const char *command) {
     while (*command) {
-        UARTCharPut(UART1_BASE, *command++);  // Env韆 cada car醕ter por UART
+        UARTCharPut(UART1_BASE, *command++);
     }
 }
-
 
 /******************************************************************************/
 /*                         Interruption handler                               */
@@ -207,8 +159,4 @@ void sendGpsCommand(const char *command) {
 void UART1IntHandler(void) {
     uint32_t status = UARTIntStatus(UART1_BASE, true);
     UARTIntClear(UART1_BASE, status);
-
-    if (status & UART_INT_RX) {
-        Semaphore_post(uartReadSem);
-    }
 }
