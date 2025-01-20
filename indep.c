@@ -1,4 +1,4 @@
-//******************************************************************************/
+/******************************************************************************/
 /*                                                                            */
 /* project  : PRACTICAS SE-II UNIZAR                                          */
 /* filename : comun.c                                                         */
@@ -53,11 +53,14 @@
 /*                        Global variables                                    */
 /******************************************************************************/
 Task_Handle periodicTask;
-Task_Handle messageTask;  // Nueva tarea
+Task_Handle messageTask;
 
 Semaphore_Handle periodicSem;
+Semaphore_Handle messageSem;
 
 Clock_Handle periodicClock;
+Clock_Handle messageClock;
+
 Clock_Params clockParams;
 Task_Params taskParams;
 
@@ -72,6 +75,7 @@ Void periodicTaskFunc(UArg arg0, UArg arg1);
 Void messageTaskFunc(UArg arg0, UArg arg1);
 Void InitUart(void);
 Void periodic_release(void);
+Void message_release(void);
 Void sendGpsCommand(const char *command);
 
 
@@ -80,10 +84,10 @@ Void sendGpsCommand(const char *command);
 /******************************************************************************/
 Void main()
 {
-    // Inicializaci髇 de UART y GPIO
+    // Inicializaci贸n de UART y GPIO
     InitUart();
 
-    // Task de tarea peri骴ica
+    // Task de tarea peri贸dica
     Task_Params_init(&taskParams);
     taskParams.priority = 1;
     periodicTask = Task_create(periodicTaskFunc, &taskParams, NULL);
@@ -93,13 +97,20 @@ Void main()
     taskParams.priority = 1;
     messageTask = Task_create(messageTaskFunc, &taskParams, NULL);
 
-    // Clock para tarea peri骴ica
+    // Clock para tarea peri贸dica
     Clock_Params_init(&clockParams);
-    clockParams.period = 200;
+    clockParams.period = 100;
     clockParams.startFlag = TRUE;
     periodicClock = Clock_create((Clock_FuncPtr)periodic_release, 10, &clockParams, NULL);
 
+    // Clock para tarea mensaje de prueba
+    Clock_Params_init(&clockParams);
+    clockParams.period = 200;
+    clockParams.startFlag = TRUE;
+    messageClock = Clock_create((Clock_FuncPtr)message_release, 10, &clockParams, NULL);
+
     periodicSem = Semaphore_create(0, NULL, NULL);
+    messageSem = Semaphore_create(0, NULL, NULL);
 
     BIOS_start();
 }
@@ -117,7 +128,7 @@ Void InitUart(void) {
     GPIOPinConfigure(GPIO_PB1_U1TX);   // Configurar PB1 como TX
     GPIOPinTypeUART(GPIO_PORTB_BASE, GPIO_PIN_0 | GPIO_PIN_1); // Establecer pines como UART
 
-    // Configuraci髇 de UART (9600 baudios, 8N1)
+    // Configuraci贸n de UART (9600 baudios, 8N1)
     UARTConfigSetExpClk(UART1_BASE, SysCtlClockGet(), 9600, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
 
     // Limpiar las interrupciones de UART1
@@ -138,7 +149,7 @@ Void periodic_release(void) {
 Void periodicTaskFunc(UArg arg0, UArg arg1) {
     for (;;) {
         Semaphore_pend(periodicSem, BIOS_WAIT_FOREVER);
-
+        CS(20);
         while (UARTCharsAvail(UART1_BASE)) {
             char c = UARTCharGet(UART1_BASE);
             if (c == '\n' || gpsBufferIndex >= (GPS_BUFFER_SIZE - 1)) {
@@ -157,21 +168,27 @@ Void periodicTaskFunc(UArg arg0, UArg arg1) {
 /******************************************************************************/
 /*                        Message Task                                        */
 /******************************************************************************/
+Void message_release(void) {
+    Semaphore_post(messageSem);
+}
+
 Void messageTaskFunc(UArg arg0, UArg arg1) {
     for (;;) {
+        Semaphore_pend(messageSem, BIOS_WAIT_FOREVER);
         System_printf("Message Task Executed!\n");
         System_flush();
-        Task_sleep(1000);
+        CS(10);
     }
 }
 
 /******************************************************************************/
-/*                     Method to send commans to GPS module                   */
+/*                     Method to send command to GPS module                   */
 /******************************************************************************/
 void sendGpsCommand(const char *command) {
     while (*command) {
         UARTCharPut(UART1_BASE, *command++);
     }
 }
+
 
 
