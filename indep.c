@@ -1,21 +1,17 @@
 /******************************************************************************/
 /*                                                                            */
-/* project  : PRACTICAS SE-II UNIZAR                                          */
-/* filename : comun.c                                                         */
-/* version  : 2                                                               */
-/* date     : 28/09/2020                                                      */
-/* author   : Jose Luis Villarroel                                            */
-/* description : Comun con servidor esporadico. PR2                           */
+/* project  : Trabajo SE-II UNIZAR                                            */
+/* date     : 21/01/2025                                                      */
+/* author   : Inés Román Gracia                                               */
+/* description : Lecturas GPS bajo nivel y sin parsear                        */
 /*                                                                            */
 /******************************************************************************/
-
 
 /******************************************************************************/
 /*                        Defines                                             */
 /******************************************************************************/
 #define TARGET_IS_TM4C123_RB1
-#define GPS_BUFFER_SIZE 128
-
+#define MESSAGE_BUFFER_SIZE 128
 
 /******************************************************************************/
 /*                        Used modules                                        */
@@ -26,7 +22,6 @@
 
 #include <xdc/runtime/Error.h>
 #include <xdc/runtime/System.h>
-
 #include <xdc/runtime/Log.h>
 #include <ti/uia/events/UIABenchmark.h>
 
@@ -34,7 +29,9 @@
 #include <ti/sysbios/knl/Clock.h>
 #include <ti/sysbios/knl/Task.h>
 #include <ti/sysbios/knl/Semaphore.h>
+#include <ti/sysbios/hal/Hwi.h>
 
+#include "tm4c123gh6pm.h"
 #include "computos.h"
 
 #include "inc/hw_types.h"
@@ -42,28 +39,34 @@
 #include "inc/hw_gpio.h"
 #include "inc/hw_uart.h"
 #include "inc/hw_sysctl.h"
-#include "inc/hw_nvic.h"
 #include "driverlib/gpio.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/rom.h"
 #include "driverlib/uart.h"
 #include "driverlib/pin_map.h"
-#include "driverlib/interrupt.h"
 
 /******************************************************************************/
 /*                        Global variables                                    */
 /******************************************************************************/
 Task_Handle periodicTask;
-
 Semaphore_Handle periodicSem;
-
 Clock_Handle periodicClock;
+
 Clock_Params clockParams;
 Task_Params taskParams;
 
-char gpsBuffer[GPS_BUFFER_SIZE];
-volatile int gpsBufferIndex = 0;
+Hwi_Params hwiParams;
+Hwi_Handle myHwi;
 
+bool messageStarted = false;
+
+char messageBuffer[MESSAGE_BUFFER_SIZE];
+volatile int messageBufferIndex = 0;
+bool messageComplete = false;
+
+char latencycommand[] = "$PMTK220,1000*1F\x0D\x0A";
+char baudcommand[] = "$PMTK251,9600*17\x0D\x0A";
+char latlongcommand[] = "$PMTK314,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\x0D\x0A";
 
 /******************************************************************************/
 /*                        Function Prototypes                                 */
@@ -72,7 +75,7 @@ Void periodicTaskFunc(UArg arg0, UArg arg1);
 Void InitUart(void);
 Void periodic_release(void);
 Void sendGpsCommand(const char *command);
-
+Void GPSInt(UArg);
 
 /******************************************************************************/
 /*                        Main                                                */
@@ -82,6 +85,11 @@ Void main()
     // Inicialización de UART y GPIO
     InitUart();
 
+    // Configurar la interrupción
+    Hwi_Params_init(&hwiParams);
+    hwiParams.maskSetting = Hwi_MaskingOption_SELF;
+    myHwi = Hwi_create(22, GPSInt, &hwiParams, NULL);
+
     // Task de tarea periódica
     Task_Params_init(&taskParams);
     taskParams.priority = 1;
@@ -89,7 +97,7 @@ Void main()
 
     // Clock para tarea periódica
     Clock_Params_init(&clockParams);
-    clockParams.period = 200;
+    clockParams.period = 100;
     clockParams.startFlag = TRUE;
     periodicClock = Clock_create((Clock_FuncPtr)periodic_release, 10, &clockParams, NULL);
 
@@ -102,31 +110,58 @@ Void main()
 /*                        UART Initialization                                */
 /******************************************************************************/
 Void InitUart(void) {
-    // Habilitar el reloj de UART1 y GPIOB
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_UART1);  // Habilitar UART1
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);  // Habilitar GPIOB
+    SYSCTL_RCGCUART_R = 0x2;    // Activa UART1
+    SYSCTL_RCGCGPIO_R = 0x2;    // Activa GPIOB
 
-    // Configurar PB0 y PB1 como UART
-    GPIOPinConfigure(GPIO_PB0_U1RX);   // Configurar PB0 como RX
-    GPIOPinConfigure(GPIO_PB1_U1TX);   // Configurar PB1 como TX
-    GPIOPinTypeUART(GPIO_PORTB_BASE, GPIO_PIN_0 | GPIO_PIN_1); // Establecer pines como UART
+    GPIO_PORTB_DEN_R = 0x3;     // Habilita PB0 y PB1 como pines digitales
+    GPIO_PORTB_AFSEL_R = 0x3;   // Habilita funciones hardware alternas en PB0 y PB1
+    GPIO_PORTB_AMSEL_R = 0x0;  // Deshabilita función analógica en PB0 y PB1
+    GPIO_PORTB_PCTL_R = 0x11; // Configura PB0 y PB1 para UART1
 
+    UART1_IBRD_R = 104;          // Configura la parte entera del divisor de baudios
+    UART1_FBRD_R = 11;           // Configura la parte fraccional del divisor de baudios
+    UART1_LCRH_R = 0x60;         // Configura 8 bits de palabra, sin paridad, 1 bit de stop
+    UART1_CC_R = 0x0;            // Selecciona el reloj del sistema para UART1
+    UART1_CTL_R = 0x301;        // Habilita UART1, TX y RX
 
-    // Configuración de UART (9600 baudios, 8N1)
-    UARTConfigSetExpClk(UART1_BASE, SysCtlClockGet(), 9600, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+    UART1_ICR_R = ~0x10;         // Limpia las interrupciones previas
+    UART1_IM_R = 0x10;          // Habilita interrupción por recepción (RX)
+    NVIC_EN0_R = 0x40;          // Habilita interrupciones para UART1 (bit 6 en EN0)
 
-    // Limpiar las interrupciones de UART1
-    UARTIntClear(UART1_BASE, UART_INT_RX);
+    // Enviar comandos al GPS
+    sendGpsCommand(latencycommand);
+    sendGpsCommand(baudcommand);
+    sendGpsCommand(latlongcommand);
+}
 
-    // Activar las interrupciones de UART1 (habilitar interrupción de recepción)
-    UARTIntEnable(UART1_BASE, UART_INT_RX);
+/******************************************************************************/
+/*                        Handler interruption                                */
+/******************************************************************************/
+Void GPSInt(UArg arg) {
+    if (UART1_MIS_R & 0x10) {
+        char received = UART1_DR_R & 0xFF;
+        UART1_ICR_R |= 0x10;  // Clean
 
-    // Habilitar la interrupción de UART1 en el NVIC (Interrupt vector number 22)
-    IntEnable(22);
-    IntMasterEnable();
+        if (received == '$') {
+            messageStarted = true;
+            messageBufferIndex = 0;
+        }
 
-    // Enviar comando de configuración al GPS
-    sendGpsCommand("$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28\r\n");
+        if (messageStarted) {
+            if (messageBufferIndex < MESSAGE_BUFFER_SIZE - 1) {
+                messageBuffer[messageBufferIndex++] = received;
+                if (received == '\n') {
+                    messageBuffer[messageBufferIndex] = '\0';
+                    messageComplete = true;
+                    messageStarted = false;
+                }
+            } else {
+                // Reinicia en caso de desbordamiento
+                messageBufferIndex = 0;
+                messageStarted = false;
+            }
+        }
+    }
 }
 
 /******************************************************************************/
@@ -135,28 +170,24 @@ Void InitUart(void) {
 Void periodic_release(void) {
     Semaphore_post(periodicSem);
 }
+
 Void periodicTaskFunc(UArg arg0, UArg arg1) {
     for (;;) {
         Semaphore_pend(periodicSem, BIOS_WAIT_FOREVER);
-        CS(20);
-        System_printf("Periodic Task Executed!\n");
-        System_flush();
+
+        if (messageComplete) {
+            System_printf("%s", messageBuffer);
+            System_flush();
+            messageComplete = false;
+        }
     }
 }
 
 /******************************************************************************/
-/*                     Method to send commans to GPS module                   */
+/*                     Method to send command to GPS module                   */
 /******************************************************************************/
-void sendGpsCommand(const char *command) {
+Void sendGpsCommand(const char *command) {
     while (*command) {
         UARTCharPut(UART1_BASE, *command++);
     }
-}
-
-/******************************************************************************/
-/*                         Interruption handler                               */
-/******************************************************************************/
-void UART1IntHandler(void) {
-    uint32_t status = UARTIntStatus(UART1_BASE, true);
-    UARTIntClear(UART1_BASE, status);
 }
