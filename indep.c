@@ -1,21 +1,19 @@
 /******************************************************************************/
 /*                                                                            */
-/* project  : PRACTICAS SE-II UNIZAR                                          */
+/* project  : Trabajo SE-II UNIZAR                                            */
 /* filename : comun.c                                                         */
 /* version  : 2                                                               */
-/* date     : 28/09/2020                                                      */
-/* author   : Jose Luis Villarroel                                            */
-/* description : Comun con servidor esporadico. PR2                           */
+/* date     : 21/01/2025                                                      */
+/* author   : Inés Román Gracia                                               */
+/* description : Lecturas GPS con funciones de alto nievel y sin parsear.     */
 /*                                                                            */
 /******************************************************************************/
-
 
 /******************************************************************************/
 /*                        Defines                                             */
 /******************************************************************************/
 #define TARGET_IS_TM4C123_RB1
 #define GPS_BUFFER_SIZE 128
-
 
 /******************************************************************************/
 /*                        Used modules                                        */
@@ -35,6 +33,7 @@
 #include <ti/sysbios/knl/Task.h>
 #include <ti/sysbios/knl/Semaphore.h>
 
+#include "tm4c123gh6pm.h"
 #include "computos.h"
 
 #include "inc/hw_types.h"
@@ -48,36 +47,33 @@
 #include "driverlib/uart.h"
 #include "driverlib/pin_map.h"
 
-
 /******************************************************************************/
 /*                        Global variables                                    */
 /******************************************************************************/
 Task_Handle periodicTask;
-Task_Handle messageTask;
 
 Semaphore_Handle periodicSem;
-Semaphore_Handle messageSem;
 
 Clock_Handle periodicClock;
-Clock_Handle messageClock;
 
 Clock_Params clockParams;
 Task_Params taskParams;
 
 char gpsBuffer[GPS_BUFFER_SIZE];
 volatile int gpsBufferIndex = 0;
+bool messageStarted = false;
 
+char latencycommand[] = "$PMTK220,1000*1F\x0D\x0A";
+char baudcommand[] = "$PMTK251,9600*17\x0D\x0A";
+char latlongcommand[]= "$PMTK314,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29\x0D\x0A";
 
 /******************************************************************************/
 /*                        Function Prototypes                                 */
 /******************************************************************************/
 Void periodicTaskFunc(UArg arg0, UArg arg1);
-Void messageTaskFunc(UArg arg0, UArg arg1);
 Void InitUart(void);
 Void periodic_release(void);
-Void message_release(void);
 Void sendGpsCommand(const char *command);
-
 
 /******************************************************************************/
 /*                        Main                                                */
@@ -92,25 +88,13 @@ Void main()
     taskParams.priority = 1;
     periodicTask = Task_create(periodicTaskFunc, &taskParams, NULL);
 
-    // Task de nueva tarea que imprime mensaje
-    Task_Params_init(&taskParams);
-    taskParams.priority = 1;
-    messageTask = Task_create(messageTaskFunc, &taskParams, NULL);
-
     // Clock para tarea periódica
     Clock_Params_init(&clockParams);
     clockParams.period = 100;
     clockParams.startFlag = TRUE;
     periodicClock = Clock_create((Clock_FuncPtr)periodic_release, 10, &clockParams, NULL);
 
-    // Clock para tarea mensaje de prueba
-    Clock_Params_init(&clockParams);
-    clockParams.period = 200;
-    clockParams.startFlag = TRUE;
-    messageClock = Clock_create((Clock_FuncPtr)message_release, 10, &clockParams, NULL);
-
     periodicSem = Semaphore_create(0, NULL, NULL);
-    messageSem = Semaphore_create(0, NULL, NULL);
 
     BIOS_start();
 }
@@ -134,9 +118,10 @@ Void InitUart(void) {
     // Limpiar las interrupciones de UART1
     UARTIntClear(UART1_BASE, UART_INT_RX);
 
-    // Enviar el comando al GPS para configurar su salida
-    sendGpsCommand("$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28\r\n");
-
+    // Enviar comandos al GPS para configurar su salida
+    sendGpsCommand(latencycommand);
+    sendGpsCommand(baudcommand);
+    sendGpsCommand(latlongcommand);
 }
 
 /******************************************************************************/
@@ -149,35 +134,27 @@ Void periodic_release(void) {
 Void periodicTaskFunc(UArg arg0, UArg arg1) {
     for (;;) {
         Semaphore_pend(periodicSem, BIOS_WAIT_FOREVER);
-        CS(20);
         while (UARTCharsAvail(UART1_BASE)) {
             char c = UARTCharGet(UART1_BASE);
-            if (c == '\n' || gpsBufferIndex >= (GPS_BUFFER_SIZE - 1)) {
-                gpsBuffer[gpsBufferIndex] = '\0';
+            if (c == '$') {
+                // Comenzar un nuevo mensaje
+                messageStarted = true;
                 gpsBufferIndex = 0;
-                // Mostrar el mensaje recibido
-                System_printf("GPS Data: %s\n", gpsBuffer);
-                System_flush();
-            } else {
-                gpsBuffer[gpsBufferIndex++] = c;
+            }
+
+            if (messageStarted) {
+                if (c == '\n' || gpsBufferIndex >= (GPS_BUFFER_SIZE - 1)) {
+                    gpsBuffer[gpsBufferIndex] = '\0';
+                    messageStarted = false;
+
+                    // Mostrar el mensaje recibido
+                    System_printf("GPS Data: %s\n", gpsBuffer);
+                    System_flush();
+                } else {
+                    gpsBuffer[gpsBufferIndex++] = c;
+                }
             }
         }
-    }
-}
-
-/******************************************************************************/
-/*                        Message Task                                        */
-/******************************************************************************/
-Void message_release(void) {
-    Semaphore_post(messageSem);
-}
-
-Void messageTaskFunc(UArg arg0, UArg arg1) {
-    for (;;) {
-        Semaphore_pend(messageSem, BIOS_WAIT_FOREVER);
-        System_printf("Message Task Executed!\n");
-        System_flush();
-        CS(10);
     }
 }
 
@@ -189,6 +166,3 @@ void sendGpsCommand(const char *command) {
         UARTCharPut(UART1_BASE, *command++);
     }
 }
-
-
-
