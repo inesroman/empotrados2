@@ -103,6 +103,11 @@ Void main()
 
     periodicSem = Semaphore_create(0, NULL, NULL);
 
+    // Enviar comandos al GPS
+    sendGpsCommand(latencycommand);
+    sendGpsCommand(baudcommand);
+    sendGpsCommand(latlongcommand);
+
     BIOS_start();
 }
 
@@ -110,28 +115,23 @@ Void main()
 /*                        UART Initialization                                */
 /******************************************************************************/
 Void InitUart(void) {
-    SYSCTL_RCGCUART_R = 0x2;    // Activa UART1
-    SYSCTL_RCGCGPIO_R = 0x2;    // Activa GPIOB
+    SYSCTL_RCGCUART_R = 0x2;            // Activa UART1
+    SYSCTL_RCGCGPIO_R = 0x2;            // Activa GPIOB
 
-    GPIO_PORTB_DEN_R = 0x3;     // Habilita PB0 y PB1 como pines digitales
-    GPIO_PORTB_AFSEL_R = 0x3;   // Habilita funciones hardware alternas en PB0 y PB1
-    GPIO_PORTB_AMSEL_R = 0x0;  // Deshabilita función analógica en PB0 y PB1
-    GPIO_PORTB_PCTL_R = 0x11; // Configura PB0 y PB1 para UART1
+    GPIO_PORTB_DEN_R = 0x3;             // Habilita PB0 y PB1 como pines digitales
+    GPIO_PORTB_AFSEL_R = 0x3;           // Habilita funciones hardware alternas en PB0 y PB1
+    GPIO_PORTB_AMSEL_R = 0x0;           // Deshabilita función analógica en PB0 y PB1
+    GPIO_PORTB_PCTL_R = 0x11;           // Configura PB0 y PB1 para UART1
 
-    UART1_IBRD_R = 104;          // Configura la parte entera del divisor de baudios
-    UART1_FBRD_R = 11;           // Configura la parte fraccional del divisor de baudios
-    UART1_LCRH_R = 0x60;         // Configura 8 bits de palabra, sin paridad, 1 bit de stop
-    UART1_CC_R = 0x0;            // Selecciona el reloj del sistema para UART1
-    UART1_CTL_R = 0x301;        // Habilita UART1, TX y RX
+    UART1_IBRD_R = 104;                 // Configura la parte entera del divisor de baudios
+    UART1_FBRD_R = 11;                  // Configura la parte fraccional del divisor de baudios
+    UART1_LCRH_R = 0x60;                // Configura 8 bits de palabra, sin paridad, 1 bit de stop
+    UART1_CC_R = 0x0;                   // Selecciona el reloj del sistema para UART1
+    UART1_CTL_R = 0x301;                // Habilita UART1, TX y RX
 
-    UART1_ICR_R = ~0x10;         // Limpia las interrupciones previas
-    UART1_IM_R = 0x10;          // Habilita interrupción por recepción (RX)
-    NVIC_EN0_R = 0x40;          // Habilita interrupciones para UART1 (bit 6 en EN0)
-
-    // Enviar comandos al GPS
-    sendGpsCommand(latencycommand);
-    sendGpsCommand(baudcommand);
-    sendGpsCommand(latlongcommand);
+    UART1_ICR_R = ~0x10;                // Limpia las interrupciones previas
+    UART1_IM_R = 0x10;                  // Habilita interrupción por recepción (RX)
+    NVIC_EN0_R = 0x40;                  // Habilita interrupciones para UART1 (bit 6 en EN0)
 }
 
 /******************************************************************************/
@@ -195,4 +195,6 @@ Void sendGpsCommand(const char *command) {
         UARTCharPut(UART1_BASE, *command++);
     }
 }
+
+
 
