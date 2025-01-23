@@ -11,7 +11,7 @@
 /*                        Defines                                             */
 /******************************************************************************/
 #define TARGET_IS_TM4C123_RB1
-#define MESSAGE_BUFFER_SIZE 128
+#define BUFFER_SIZE 128
 
 /******************************************************************************/
 /*                        Used modules                                        */
@@ -60,9 +60,9 @@ Hwi_Handle myHwi;
 
 bool messageStarted = false;
 
-char messageBuffer[MESSAGE_BUFFER_SIZE];
-volatile int messageBufferIndex = 0;
-bool messageComplete = false;
+char buffer[BUFFER_SIZE];
+volatile int readIndex = 0;
+volatile int writeIndex = 0;
 
 char latencycommand[] = "$PMTK220,1000*1F\x0D\x0A";
 char baudcommand[] = "$PMTK251,9600*17\x0D\x0A";
@@ -138,28 +138,13 @@ Void InitUart(void) {
 /*                        Handler interruption                                */
 /******************************************************************************/
 Void GPSInt(UArg arg) {
-    if (UART1_MIS_R & 0x10) {
+    //if (UART1_MIS_R & 0x10) {
+    if (!(UART1_DR_R & 0xF00)) {
         char received = UART1_DR_R & 0xFF;
         UART1_ICR_R |= 0x10;  // Clean
-
-        if (received == '$') {
-            messageStarted = true;
-            messageBufferIndex = 0;
-        }
-
-        if (messageStarted) {
-            if (messageBufferIndex < MESSAGE_BUFFER_SIZE - 1) {
-                messageBuffer[messageBufferIndex++] = received;
-                if (received == '\n') {
-                    messageBuffer[messageBufferIndex] = '\0';
-                    messageComplete = true;
-                    messageStarted = false;
-                }
-            } else {
-                // Reinicia en caso de desbordamiento
-                messageBufferIndex = 0;
-                messageStarted = false;
-            }
+        if(((writeIndex + 1) % BUFFER_SIZE) != readIndex) {
+            buffer[writeIndex] = received;
+            writeIndex = (writeIndex+1)%BUFFER_SIZE;
         }
     }
 }
@@ -172,16 +157,35 @@ Void periodic_release(void) {
 }
 
 Void periodicTaskFunc(UArg arg0, UArg arg1) {
+    char msgBuffer[BUFFER_SIZE];
+    int msgIndex = 0;
+
     for (;;) {
         Semaphore_pend(periodicSem, BIOS_WAIT_FOREVER);
 
-        if (messageComplete) {
-            System_printf("%s", messageBuffer);
-            System_flush();
-            messageComplete = false;
+        while (readIndex != writeIndex) {
+            char received = buffer[readIndex];
+            readIndex = (readIndex + 1) % BUFFER_SIZE;
+
+            if (received == '$') {
+                msgIndex = 0;
+            }
+
+            if (msgIndex < BUFFER_SIZE - 1) {
+                msgBuffer[msgIndex++] = received;
+            }
+
+            if (received == '\n') {
+                msgBuffer[msgIndex] = '\0';
+                System_printf("%s", msgBuffer);
+                System_flush();
+
+                msgIndex = 0;
+            }
         }
     }
 }
+
 
 /******************************************************************************/
 /*                     Method to send command to GPS module                   */
@@ -191,3 +195,4 @@ Void sendGpsCommand(const char *command) {
         UARTCharPut(UART1_BASE, *command++);
     }
 }
+
