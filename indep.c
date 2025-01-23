@@ -1,7 +1,7 @@
 /******************************************************************************/
 /*                                                                            */
 /* project  : Trabajo SE-II UNIZAR                                            */
-/* date     : 21/01/2025                                                      */
+/* date     : 24/01/2025                                                      */
 /* author   : Inés Román Gracia                                               */
 /* description : Lecturas GPS bajo nivel y sin parsear                        */
 /*                                                                            */
@@ -192,9 +192,10 @@ Void periodicTaskFunc(UArg arg0, UArg arg1) {
 /******************************************************************************/
 Void sendGpsCommand(const char *command) {
     while (*command) {
-        UARTCharPut(UART1_BASE, *command++);
+        while ((UART1_FR_R & UART_FR_TXFF) != 0) {
+        }
+        UART1_DR_R = *command;
+
+        command++;
     }
 }
-
-
-
